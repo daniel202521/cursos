@@ -1,181 +1,146 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
-const multer = require('multer');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
-const fs = require('fs');
+const bodyParser = require('body-parser');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: {
-        origin: "*"
-    }
+const PORT = 5000;
+
+// Middlewares
+app.use(cors()); // Permite que el HTML se conecte al servidor
+app.use(bodyParser.json({ limit: '10mb' })); // Limite alto para las firmas en base64
+
+// --- CONEXIÓN A MONGODB ---
+// Nota: He añadido 'tool_inventory' después de .net/ para que cree una base de datos específica
+const MONGO_URI = "mongodb+srv://daniel:daniel25@capacitacion.nxd7yl9.mongodb.net/tool_inventory?retryWrites=true&w=majority&appName=capacitacion&authSource=admin";
+
+mongoose.connect(MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+})
+.then(() => console.log('✅ Conectado a MongoDB Atlas'))
+.catch(err => console.error('❌ Error de conexión:', err));
+
+// --- MODELOS (ESQUEMAS DE DATOS) ---
+
+// 1. Inventario
+const ItemSchema = new mongoose.Schema({
+    name: String,
+    sku: String,
+    type: String,
+    stock: Number,
+    total: Number
 });
+const Item = mongoose.model('Item', ItemSchema);
 
-// Carpeta para imágenes y cursos
-const uploadsDir = path.join(__dirname, '../frontend/uploads');
-const cursosJsonPath = path.join(__dirname, '../frontend/cursos.json');
-const usuariosJsonPath = path.join(__dirname, '../frontend/usuarios.json');
-
-// Crear carpetas y archivos si no existen
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-if (!fs.existsSync(cursosJsonPath)) fs.writeFileSync(cursosJsonPath, '[]', 'utf8');
-if (!fs.existsSync(usuariosJsonPath)) fs.writeFileSync(usuariosJsonPath, '{}', 'utf8');
-
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadsDir);
-    },
-    filename: function (req, file, cb) {
-        cb(null, file.originalname);
-    }
+// 2. Préstamos (Tickets)
+const LoanSchema = new mongoose.Schema({
+    responsible: String,
+    location: String,
+    date: String,
+    items: Array, // Guardamos el array del carrito
+    signature: String, // Imagen en base64
+    status: { type: String, default: 'Active' },
+    returnDate: String
 });
-const upload = multer({ storage });
+const Loan = mongoose.model('Loan', LoanSchema);
 
-const corsOptions = {
-    origin: '*', // Permitir cualquier origen (útil para apps móviles)
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-};
-app.use(cors(corsOptions));
-app.use(express.json()); // Asegura que los POST con JSON funcionen
-app.use(express.urlencoded({ extended: true })); // Por si acaso algún frontend envía x-www-form-urlencoded
+// --- RUTAS DE LA API ---
 
-// Guardar curso y pasos en cursos.json y guardar imágenes
-app.post('/api/curso', upload.array('imagenes'), (req, res) => {
+// GET: Obtener inventario
+app.get('/api/inventory', async (req, res) => {
     try {
-        const { titulo, descripcion } = req.body;
-        let pasos = [];
-        if (req.body.pasos) {
-            pasos = JSON.parse(req.body.pasos);
-            // Actualiza la ruta de imagen para servir desde /uploads/
-            pasos = pasos.map(p => ({
-                ...p,
-                imagen: p.imagen ? `/uploads/${p.imagen}` : null
-            }));
-        }
-
-        // Leer cursos existentes
-        let cursos = [];
-        if (fs.existsSync(cursosJsonPath)) {
-            const data = fs.readFileSync(cursosJsonPath, 'utf8');
-            if (data) cursos = JSON.parse(data);
-        }
-
-        // Agregar nuevo curso
-        cursos.push({ titulo, descripcion, pasos });
-
-        // Guardar cursos en el archivo
-        fs.writeFileSync(cursosJsonPath, JSON.stringify(cursos, null, 2));
-
-        io.emit('nuevoCurso', { mensaje: 'Nuevo curso agregado' });
-        res.json({ mensaje: 'Curso recibido' });
+        const items = await Item.find();
+        res.json(items);
     } catch (err) {
-        res.status(500).json({ error: 'Error al guardar el curso' });
+        res.status(500).json({ error: err.message });
     }
 });
 
-// Endpoint para obtener los cursos guardados
-app.get('/api/cursos', (req, res) => {
+// POST: Crear nuevo item
+app.post('/api/inventory', async (req, res) => {
     try {
-        if (fs.existsSync(cursosJsonPath)) {
-            const data = fs.readFileSync(cursosJsonPath, 'utf8');
-            res.json(JSON.parse(data));
-        } else {
-            res.json([]);
-        }
+        const newItem = new Item(req.body);
+        await newItem.save();
+        res.json(newItem);
     } catch (err) {
-        res.status(500).json({ error: 'Error al leer los cursos' });
+        res.status(500).json({ error: err.message });
     }
 });
 
-// --- Endpoints de usuarios y progreso ---
-
-// Registrar usuario
-app.post('/api/registrar', (req, res) => {
-    const { usuario, password } = req.body;
-    if (!usuario || !password) return res.status(400).json({ error: 'Faltan datos' });
-    let usuarios = {};
+// GET: Obtener préstamos
+app.get('/api/loans', async (req, res) => {
     try {
-        if (fs.existsSync(usuariosJsonPath)) {
-            const raw = fs.readFileSync(usuariosJsonPath, 'utf8');
-            usuarios = raw ? JSON.parse(raw) : {};
-        }
-        if (usuarios[usuario]) return res.status(409).json({ error: 'Usuario ya existe' });
-        usuarios[usuario] = { password, progreso: {} };
-        fs.writeFileSync(usuariosJsonPath, JSON.stringify(usuarios, null, 2), 'utf8');
-        res.json({ mensaje: 'Usuario registrado' });
+        // .sort({ _id: -1 }) hace que salgan los más nuevos primero
+        const loans = await Loan.find().sort({ _id: -1 });
+        res.json(loans);
     } catch (err) {
-        res.status(500).json({ error: 'Error al registrar usuario' });
+        res.status(500).json({ error: err.message });
     }
 });
 
-// Login usuario
-app.post('/api/login', (req, res) => {
-    const { usuario, password } = req.body;
-    if (!usuario || !password) return res.status(400).json({ error: 'Faltan datos' });
-    let usuarios = {};
+// POST: Crear ticket de salida (Y actualizar stock)
+app.post('/api/loans', async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
     try {
-        if (fs.existsSync(usuariosJsonPath)) {
-            const raw = fs.readFileSync(usuariosJsonPath, 'utf8');
-            usuarios = raw ? JSON.parse(raw) : {};
+        // 1. Guardar el ticket
+        const loan = new Loan(req.body);
+        await loan.save({ session });
+
+        // 2. Restar stock de cada item
+        for (const cartItem of req.body.items) {
+            await Item.findByIdAndUpdate(
+                cartItem._id, 
+                { $inc: { stock: -cartItem.qty } },
+                { session }
+            );
         }
-        if (!usuarios[usuario] || usuarios[usuario].password !== password) {
-            return res.status(401).json({ error: 'Credenciales incorrectas' });
-        }
-        res.json({ mensaje: 'Login correcto' });
+
+        await session.commitTransaction();
+        res.json({ message: 'Ticket creado y stock actualizado', loan });
     } catch (err) {
-        res.status(500).json({ error: 'Error al hacer login' });
+        await session.abortTransaction();
+        res.status(500).json({ error: err.message });
+    } finally {
+        session.endSession();
     }
 });
 
-// Guardar progreso de usuario
-app.post('/api/progreso', (req, res) => {
-    const { usuario, cursoId, paso } = req.body;
-    if (!usuario || cursoId == null || paso == null) return res.status(400).json({ error: 'Faltan datos' });
-    let usuarios = {};
-    if (fs.existsSync(usuariosJsonPath)) {
-        usuarios = JSON.parse(fs.readFileSync(usuariosJsonPath, 'utf8'));
+// PUT: Devolver préstamo (Y sumar stock)
+app.put('/api/loans/:id/return', async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const loan = await Loan.findById(req.params.id);
+        if (!loan) throw new Error('Ticket no encontrado');
+        if (loan.status === 'Returned') throw new Error('Ya devuelto');
+
+        // 1. Actualizar ticket
+        loan.status = 'Returned';
+        loan.returnDate = new Date().toLocaleString();
+        await loan.save({ session });
+
+        // 2. Devolver stock
+        for (const cartItem of loan.items) {
+            await Item.findByIdAndUpdate(
+                cartItem._id, 
+                { $inc: { stock: cartItem.qty } },
+                { session }
+            );
+        }
+
+        await session.commitTransaction();
+        res.json({ message: 'Devolución procesada', loan });
+    } catch (err) {
+        await session.abortTransaction();
+        res.status(500).json({ error: err.message });
+    } finally {
+        session.endSession();
     }
-    if (!usuarios[usuario]) return res.status(404).json({ error: 'Usuario no encontrado' });
-    if (!usuarios[usuario].progreso) usuarios[usuario].progreso = {};
-    usuarios[usuario].progreso[cursoId] = { paso };
-    fs.writeFileSync(usuariosJsonPath, JSON.stringify(usuarios, null, 2));
-    res.json({ mensaje: 'Progreso guardado' });
 });
 
-// Obtener progreso de usuario
-app.get('/api/progreso/:usuario', (req, res) => {
-    const usuario = req.params.usuario;
-    let usuarios = {};
-    if (fs.existsSync(usuariosJsonPath)) {
-        usuarios = JSON.parse(fs.readFileSync(usuariosJsonPath, 'utf8'));
-    }
-    if (!usuarios[usuario]) return res.status(404).json({ error: 'Usuario no encontrado' });
-    res.json(usuarios[usuario].progreso || {});
-});
-
-// Servir imágenes
-app.use('/uploads', express.static(uploadsDir));
-
-// Servir archivos estáticos del frontend de usuarios en /app (debe ir ANTES del frontend de administración)
-app.use('/app', express.static(path.join(__dirname, '../frontend_usuario')));
-
-// Servir archivos estáticos del frontend de administración
-app.use(express.static(path.join(__dirname, '../frontend')));
-
-// Socket.IO conexión
-io.on('connection', (socket) => {
-    console.log('Cliente conectado vía Socket.IO');
-    // Puedes agregar más eventos aquí si lo necesitas
-});
-
-// --- Configuración de puerto y host para Render y móviles ---
-const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0'; // Escucha en todas las interfaces (necesario para Render y móviles)
-
-server.listen(PORT, HOST, () => {
-    console.log(`Servidor backend iniciado en puerto ${PORT}`);
+// Iniciar servidor
+app.listen(PORT, () => {
+    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });
