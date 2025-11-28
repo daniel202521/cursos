@@ -4,14 +4,12 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 
 const app = express();
-// IMPORTANTE PARA RENDER: Usar process.env.PORT
 const PORT = process.env.PORT || 5000;
 
-// Middlewares
-app.use(cors()); // Permite conexiones externas (Vital para que funcione desde tu PC local hacia Render)
-app.use(bodyParser.json({ limit: '10mb' })); // Límite alto para firmas
+app.use(cors());
+app.use(bodyParser.json({ limit: '10mb' }));
 
-// --- CONEXIÓN A MONGODB ---
+// --- CONEXIÓN ---
 const MONGO_URI = "mongodb+srv://daniel:daniel25@capacitacion.nxd7yl9.mongodb.net/tool_inventory?retryWrites=true&w=majority&appName=capacitacion&authSource=admin";
 
 mongoose.connect(MONGO_URI)
@@ -21,7 +19,7 @@ mongoose.connect(MONGO_URI)
 // --- MODELOS ---
 const ItemSchema = new mongoose.Schema({
     name: String,
-    brand: String, // NUEVO: Campo Marca
+    brand: String,
     sku: String,
     type: String,
     stock: Number,
@@ -40,7 +38,16 @@ const LoanSchema = new mongoose.Schema({
 });
 const Loan = mongoose.model('Loan', LoanSchema);
 
-// --- RUTAS DE LA API ---
+// NUEVO: Modelo de Historial
+const HistorySchema = new mongoose.Schema({
+    action: String,      // Ej: 'Salida', 'Devolución', 'Alta'
+    description: String, // Detalles del movimiento
+    date: String,        // Fecha legible
+    timestamp: { type: Date, default: Date.now } // Para ordenar
+});
+const History = mongoose.model('History', HistorySchema);
+
+// --- RUTAS ---
 
 // GET: Inventario
 app.get('/api/inventory', async (req, res) => {
@@ -52,32 +59,38 @@ app.get('/api/inventory', async (req, res) => {
     }
 });
 
+// GET: Historial (NUEVO)
+app.get('/api/history', async (req, res) => {
+    try {
+        // Devuelve los últimos 100 movimientos, del más nuevo al más viejo
+        const history = await History.find().sort({ timestamp: -1 }).limit(100);
+        res.json(history);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // POST: Crear item
 app.post('/api/inventory', async (req, res) => {
     try {
-        // Extraemos los datos del cuerpo de la petición
         let { name, brand, sku, type, stock, total } = req.body;
 
-        // LÓGICA SKU AUTOMÁTICO
-        // Si el SKU viene vacío o indefinido, generamos uno
         if (!sku || sku.trim() === '') {
-            // Tomar las primeras 2 letras del nombre (o 'XX' si no hay nombre)
             const prefix = name ? name.substring(0, 2).toUpperCase() : 'XX';
-            // Generar 4 dígitos aleatorios
             const randomNum = Math.floor(1000 + Math.random() * 9000); 
             sku = `${prefix}${randomNum}`;
         }
 
-        const newItem = new Item({
-            name,
-            brand,
-            sku,
-            type,
-            stock,
-            total: total || stock // Aseguramos que total tenga valor
-        });
-
+        const newItem = new Item({ name, brand, sku, type, stock, total: total || stock });
         await newItem.save();
+
+        // Registrar en Historial
+        await new History({
+            action: 'Alta',
+            description: `Nuevo item: ${name} (${stock} u.)`,
+            date: new Date().toLocaleString()
+        }).save();
+
         res.json(newItem);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -94,7 +107,7 @@ app.get('/api/loans', async (req, res) => {
     }
 });
 
-// POST: Crear ticket (Transacción)
+// POST: Crear ticket
 app.post('/api/loans', async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -109,6 +122,15 @@ app.post('/api/loans', async (req, res) => {
                 { session }
             );
         }
+
+        // Registrar en Historial
+        const itemCount = req.body.items.reduce((acc, i) => acc + i.qty, 0);
+        const itemNames = req.body.items.map(i => i.name).join(', ');
+        await new History({
+            action: 'Salida',
+            description: `Prestado a: ${req.body.responsible} (${itemCount} items: ${itemNames})`,
+            date: new Date().toLocaleString()
+        }).save({ session });
 
         await session.commitTransaction();
         res.json({ message: 'Ticket creado', loan });
@@ -140,6 +162,13 @@ app.put('/api/loans/:id/return', async (req, res) => {
                 { session }
             );
         }
+
+        // Registrar en Historial
+        await new History({
+            action: 'Devolución',
+            description: `Devuelto por: ${loan.responsible}`,
+            date: new Date().toLocaleString()
+        }).save({ session });
 
         await session.commitTransaction();
         res.json({ message: 'Devolución procesada', loan });
