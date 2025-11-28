@@ -2,19 +2,14 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const path = require('path'); // IMPORTANTE: Necesario para servir el archivo HTML
 
 const app = express();
 // IMPORTANTE PARA RENDER: Usar process.env.PORT
 const PORT = process.env.PORT || 5000;
 
 // Middlewares
-app.use(cors()); // Permite conexiones externas
+app.use(cors()); // Permite conexiones externas (Vital para que funcione desde tu PC local hacia Render)
 app.use(bodyParser.json({ limit: '10mb' })); // Límite alto para firmas
-
-// --- SERVIR ARCHIVOS ESTÁTICOS (EL FRONTEND) ---
-// Esto permite que el servidor encuentre tu archivo inventario.html en la misma carpeta
-app.use(express.static(path.join(__dirname)));
 
 // --- CONEXIÓN A MONGODB ---
 const MONGO_URI = "mongodb+srv://daniel:daniel25@capacitacion.nxd7yl9.mongodb.net/tool_inventory?retryWrites=true&w=majority&appName=capacitacion&authSource=admin";
@@ -43,12 +38,6 @@ const LoanSchema = new mongoose.Schema({
     returnDate: String
 });
 const Loan = mongoose.model('Loan', LoanSchema);
-
-// --- RUTA PRINCIPAL (VISUALIZAR LA APP) ---
-// Cuando entres a https://cursos-agwa.onrender.com/, verás tu HTML
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'inventario.html'));
-});
 
 // --- RUTAS DE LA API ---
 
