@@ -2,28 +2,28 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const path = require('path'); // IMPORTANTE: Necesario para servir el archivo HTML
 
 const app = express();
-const PORT = 5000;
+// IMPORTANTE PARA RENDER: Usar process.env.PORT
+const PORT = process.env.PORT || 5000;
 
 // Middlewares
-app.use(cors()); // Permite que el HTML se conecte al servidor
-app.use(bodyParser.json({ limit: '10mb' })); // Limite alto para las firmas en base64
+app.use(cors()); // Permite conexiones externas
+app.use(bodyParser.json({ limit: '10mb' })); // Límite alto para firmas
+
+// --- SERVIR ARCHIVOS ESTÁTICOS (EL FRONTEND) ---
+// Esto permite que el servidor encuentre tu archivo inventario.html en la misma carpeta
+app.use(express.static(path.join(__dirname)));
 
 // --- CONEXIÓN A MONGODB ---
-// Nota: He añadido 'tool_inventory' después de .net/ para que cree una base de datos específica
 const MONGO_URI = "mongodb+srv://daniel:daniel25@capacitacion.nxd7yl9.mongodb.net/tool_inventory?retryWrites=true&w=majority&appName=capacitacion&authSource=admin";
 
-mongoose.connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-})
+mongoose.connect(MONGO_URI)
 .then(() => console.log('✅ Conectado a MongoDB Atlas'))
 .catch(err => console.error('❌ Error de conexión:', err));
 
-// --- MODELOS (ESQUEMAS DE DATOS) ---
-
-// 1. Inventario
+// --- MODELOS ---
 const ItemSchema = new mongoose.Schema({
     name: String,
     sku: String,
@@ -33,21 +33,26 @@ const ItemSchema = new mongoose.Schema({
 });
 const Item = mongoose.model('Item', ItemSchema);
 
-// 2. Préstamos (Tickets)
 const LoanSchema = new mongoose.Schema({
     responsible: String,
     location: String,
     date: String,
-    items: Array, // Guardamos el array del carrito
-    signature: String, // Imagen en base64
+    items: Array,
+    signature: String,
     status: { type: String, default: 'Active' },
     returnDate: String
 });
 const Loan = mongoose.model('Loan', LoanSchema);
 
+// --- RUTA PRINCIPAL (VISUALIZAR LA APP) ---
+// Cuando entres a https://cursos-agwa.onrender.com/, verás tu HTML
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'inventario.html'));
+});
+
 // --- RUTAS DE LA API ---
 
-// GET: Obtener inventario
+// GET: Inventario
 app.get('/api/inventory', async (req, res) => {
     try {
         const items = await Item.find();
@@ -57,7 +62,7 @@ app.get('/api/inventory', async (req, res) => {
     }
 });
 
-// POST: Crear nuevo item
+// POST: Crear item
 app.post('/api/inventory', async (req, res) => {
     try {
         const newItem = new Item(req.body);
@@ -68,10 +73,9 @@ app.post('/api/inventory', async (req, res) => {
     }
 });
 
-// GET: Obtener préstamos
+// GET: Préstamos
 app.get('/api/loans', async (req, res) => {
     try {
-        // .sort({ _id: -1 }) hace que salgan los más nuevos primero
         const loans = await Loan.find().sort({ _id: -1 });
         res.json(loans);
     } catch (err) {
@@ -79,16 +83,14 @@ app.get('/api/loans', async (req, res) => {
     }
 });
 
-// POST: Crear ticket de salida (Y actualizar stock)
+// POST: Crear ticket (Transacción)
 app.post('/api/loans', async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-        // 1. Guardar el ticket
         const loan = new Loan(req.body);
         await loan.save({ session });
 
-        // 2. Restar stock de cada item
         for (const cartItem of req.body.items) {
             await Item.findByIdAndUpdate(
                 cartItem._id, 
@@ -98,7 +100,7 @@ app.post('/api/loans', async (req, res) => {
         }
 
         await session.commitTransaction();
-        res.json({ message: 'Ticket creado y stock actualizado', loan });
+        res.json({ message: 'Ticket creado', loan });
     } catch (err) {
         await session.abortTransaction();
         res.status(500).json({ error: err.message });
@@ -107,7 +109,7 @@ app.post('/api/loans', async (req, res) => {
     }
 });
 
-// PUT: Devolver préstamo (Y sumar stock)
+// PUT: Devolver
 app.put('/api/loans/:id/return', async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -116,12 +118,10 @@ app.put('/api/loans/:id/return', async (req, res) => {
         if (!loan) throw new Error('Ticket no encontrado');
         if (loan.status === 'Returned') throw new Error('Ya devuelto');
 
-        // 1. Actualizar ticket
         loan.status = 'Returned';
         loan.returnDate = new Date().toLocaleString();
         await loan.save({ session });
 
-        // 2. Devolver stock
         for (const cartItem of loan.items) {
             await Item.findByIdAndUpdate(
                 cartItem._id, 
@@ -140,7 +140,6 @@ app.put('/api/loans/:id/return', async (req, res) => {
     }
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
 });
