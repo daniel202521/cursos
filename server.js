@@ -22,8 +22,8 @@ const ItemSchema = new mongoose.Schema({
     brand: String,
     sku: String,
     type: String,
-    stock: Number,
-    total: Number
+    stock: Number, // Lo que hay disponible en bodega
+    total: Number  // Lo que posees en total (Stock + Prestado)
 });
 const Item = mongoose.model('Item', ItemSchema);
 
@@ -38,12 +38,11 @@ const LoanSchema = new mongoose.Schema({
 });
 const Loan = mongoose.model('Loan', LoanSchema);
 
-// NUEVO: Modelo de Historial
 const HistorySchema = new mongoose.Schema({
-    action: String,      // Ej: 'Salida', 'Devolución', 'Alta'
-    description: String, // Detalles del movimiento
-    date: String,        // Fecha legible
-    timestamp: { type: Date, default: Date.now } // Para ordenar
+    action: String,
+    description: String,
+    date: String,
+    timestamp: { type: Date, default: Date.now }
 });
 const History = mongoose.model('History', HistorySchema);
 
@@ -59,10 +58,9 @@ app.get('/api/inventory', async (req, res) => {
     }
 });
 
-// GET: Historial (NUEVO)
+// GET: Historial
 app.get('/api/history', async (req, res) => {
     try {
-        // Devuelve los últimos 100 movimientos, del más nuevo al más viejo
         const history = await History.find().sort({ timestamp: -1 }).limit(100);
         res.json(history);
     } catch (err) {
@@ -73,7 +71,7 @@ app.get('/api/history', async (req, res) => {
 // POST: Crear item
 app.post('/api/inventory', async (req, res) => {
     try {
-        let { name, brand, sku, type, stock, total } = req.body;
+        let { name, brand, sku, type, stock } = req.body;
 
         if (!sku || sku.trim() === '') {
             const prefix = name ? name.substring(0, 2).toUpperCase() : 'XX';
@@ -81,10 +79,10 @@ app.post('/api/inventory', async (req, res) => {
             sku = `${prefix}${randomNum}`;
         }
 
-        const newItem = new Item({ name, brand, sku, type, stock, total: total || stock });
+        // Al crear, el total es igual al stock inicial
+        const newItem = new Item({ name, brand, sku, type, stock, total: stock });
         await newItem.save();
 
-        // Registrar en Historial
         await new History({
             action: 'Alta',
             description: `Nuevo item: ${name} (${stock} u.)`,
@@ -92,6 +90,69 @@ app.post('/api/inventory', async (req, res) => {
         }).save();
 
         res.json(newItem);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE: Eliminar Item (NUEVO)
+app.delete('/api/inventory/:id', async (req, res) => {
+    try {
+        const item = await Item.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'Item no encontrado' });
+
+        // PROTECCIÓN: No permitir borrar si hay items prestados (Stock < Total)
+        // Opcional: podrías permitirlo pero es arriesgado para la integridad de datos
+        if (item.stock < item.total) {
+            return res.status(400).json({ error: 'No se puede eliminar: Hay herramientas prestadas. Recupéralas antes de borrar.' });
+        }
+
+        await Item.findByIdAndDelete(req.params.id);
+
+        await new History({
+            action: 'Baja',
+            description: `Item eliminado permanentemente: ${item.name}`,
+            date: new Date().toLocaleString()
+        }).save();
+
+        res.json({ message: 'Eliminado' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// PUT: Editar Item (NUEVO)
+app.put('/api/inventory/:id', async (req, res) => {
+    try {
+        const { name, brand, sku, type, total } = req.body; // El usuario edita el TOTAL
+        const item = await Item.findById(req.params.id);
+        if (!item) return res.status(404).json({ error: 'Item no encontrado' });
+
+        const oldTotal = item.total || item.stock;
+        const newTotal = parseInt(total);
+        const diff = newTotal - oldTotal; // Diferencia (ej: Tenía 10, ahora 12 -> diff +2)
+
+        // Actualizamos datos básicos
+        item.name = name;
+        item.brand = brand;
+        item.sku = sku;
+        item.type = type;
+        
+        // Ajuste inteligente de stock
+        item.total = newTotal;
+        item.stock = item.stock + diff; // El stock disponible sube o baja según el ajuste del total
+
+        if (item.stock < 0) return res.status(400).json({ error: 'El stock disponible no puede ser negativo. Revisa la cantidad total.' });
+
+        await item.save();
+
+        await new History({
+            action: 'Edición',
+            description: `Item editado: ${name}. Total ajustado de ${oldTotal} a ${newTotal}`,
+            date: new Date().toLocaleString()
+        }).save();
+
+        res.json(item);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -123,7 +184,6 @@ app.post('/api/loans', async (req, res) => {
             );
         }
 
-        // Registrar en Historial
         const itemCount = req.body.items.reduce((acc, i) => acc + i.qty, 0);
         const itemNames = req.body.items.map(i => i.name).join(', ');
         await new History({
@@ -163,7 +223,6 @@ app.put('/api/loans/:id/return', async (req, res) => {
             );
         }
 
-        // Registrar en Historial
         await new History({
             action: 'Devolución',
             description: `Devuelto por: ${loan.responsible}`,
