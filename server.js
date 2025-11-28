@@ -21,6 +21,7 @@ mongoose.connect(MONGO_URI)
 // --- MODELOS ---
 const ItemSchema = new mongoose.Schema({
     name: String,
+    brand: String, // NUEVO: Campo Marca
     sku: String,
     type: String,
     stock: Number,
@@ -54,7 +55,28 @@ app.get('/api/inventory', async (req, res) => {
 // POST: Crear item
 app.post('/api/inventory', async (req, res) => {
     try {
-        const newItem = new Item(req.body);
+        // Extraemos los datos del cuerpo de la petición
+        let { name, brand, sku, type, stock, total } = req.body;
+
+        // LÓGICA SKU AUTOMÁTICO
+        // Si el SKU viene vacío o indefinido, generamos uno
+        if (!sku || sku.trim() === '') {
+            // Tomar las primeras 2 letras del nombre (o 'XX' si no hay nombre)
+            const prefix = name ? name.substring(0, 2).toUpperCase() : 'XX';
+            // Generar 4 dígitos aleatorios
+            const randomNum = Math.floor(1000 + Math.random() * 9000); 
+            sku = `${prefix}${randomNum}`;
+        }
+
+        const newItem = new Item({
+            name,
+            brand,
+            sku,
+            type,
+            stock,
+            total: total || stock // Aseguramos que total tenga valor
+        });
+
         await newItem.save();
         res.json(newItem);
     } catch (err) {
